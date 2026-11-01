@@ -529,6 +529,13 @@ pub(crate) fn parse_source_file(
     let lexed = lex_with_comments(input, &file);
     let comments = lexed.comments;
     let tokens = lexed.tokens;
+    if let Some(span) = excessive_delimiter_nesting(&tokens) {
+        return Err(syntax_error(
+            input,
+            span,
+            format!("Source may not nest more than {MAX_DELIMITER_DEPTH} delimiters deep."),
+        ));
+    }
     let e = match source_file(Input::new(&tokens)) {
         Ok(mut x) => {
             attach_doc_comments(input, &comments, &mut x);
@@ -541,10 +548,47 @@ pub(crate) fn parse_source_file(
         .get(e.offset())
         .unwrap_or(tokens.last().unwrap())
         .clone();
-    let error_tok_span = error_tok.span();
-    Err(SyntaxError {
-        span: error_tok_span.clone(),
-        source_span: match error_tok_span {
+    Err(syntax_error(
+        input,
+        error_tok.span(),
+        e.inner()
+            .context
+            .iter()
+            .map(|x| x.1.to_string().chars().chain(['\n']).collect::<String>())
+            .collect::<String>(),
+    ))
+}
+
+const MAX_DELIMITER_DEPTH: usize = 24;
+
+// Recursive parsers for nested terms can overflow the thread stack on short inputs.
+fn excessive_delimiter_nesting(tokens: &[Token<'_>]) -> Option<Span> {
+    let mut depth = 0;
+    for token in tokens {
+        match token.kind {
+            TokenKind::LParen
+            | TokenKind::LCurly
+            | TokenKind::LBrack
+            | TokenKind::TemplateStringStart
+            | TokenKind::TemplateDataStart => {
+                depth += 1;
+                if depth > MAX_DELIMITER_DEPTH {
+                    return Some(token.span());
+                }
+            }
+            TokenKind::RParen | TokenKind::RCurly | TokenKind::RBrack => {
+                depth = depth.saturating_sub(1);
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+fn syntax_error(input: &str, span: Span, help: String) -> SyntaxError {
+    SyntaxError {
+        span: span.clone(),
+        source_span: match span {
             Span::None => SourceSpan::new(SourceOffset::from(0), input.len()),
             span @ Span::At { start, .. } => SourceSpan::new(
                 SourceOffset::from(start.offset as usize),
@@ -556,13 +600,8 @@ pub(crate) fn parse_source_file(
                 },
             ),
         },
-        help: e
-            .inner()
-            .context
-            .iter()
-            .map(|x| x.1.to_string().chars().chain(['\n']).collect::<String>())
-            .collect::<String>(),
-    })
+        help,
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -3792,6 +3831,21 @@ mod test {
         // fuzz/artifacts/source_parse/minimized-from-951892e61741544249594605319fe41d8851152e
         let source = "def Nl={{{{{{{{";
         assert!(parse_source_file(source, "Main.par".into()).is_err());
+    }
+
+    #[test]
+    fn nested_parentheses_from_fuzz_artifact_are_rejected() {
+        // fuzz/artifacts/source_parse/minimized-from-d7e02ede0a603d814f0a82b4443d6293061c3326
+        let source = include_str!("testdata/source_parse_nested_parens.par");
+        let error = parse_source_file(source, "Main.par".into()).unwrap_err();
+        assert!(error.help.contains("may not nest more than"));
+    }
+
+    #[test]
+    fn nested_parentheses_at_limit_return_an_error_without_overflowing() {
+        let source = format!("def X = {}!", "(".repeat(MAX_DELIMITER_DEPTH));
+        let error = parse_source_file(&source, "Main.par".into()).unwrap_err();
+        assert!(!error.help.contains("may not nest more than"));
     }
 
     #[test]
