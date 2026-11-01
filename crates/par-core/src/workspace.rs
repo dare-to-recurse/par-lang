@@ -2642,6 +2642,24 @@ mod tests {
         checked_workspace_from_files("local", &[("Main.par", source)])
     }
 
+    #[test]
+    fn comparison_chain_from_compile_fuzz_artifact_reports_type_errors() {
+        // Match the stack size used by the end-to-end compiler tests.
+        std::thread::Builder::new()
+            .stack_size(6 * 1024 * 1024)
+            .spawn(|| {
+                // fuzz/artifacts/source_compile/minimized-from-0917d5de50a682c363c6005b84d836042a9dbb7b
+                let source = include_str!("testdata/source_compile_comparison_chain.par");
+                let parsed = parsed_package_from_files("local", &[("Main.par", source)]);
+                let errors =
+                    workspace_type_errors(vec![WorkspacePackage::new(test_package_id(), parsed)]);
+                assert!(!errors.is_empty());
+            })
+            .unwrap()
+            .join()
+            .unwrap();
+    }
+
     fn row_and_column(source: &str, index: usize) -> (u32, u32) {
         let (mut row, mut column) = (0, 0);
         for ch in source[..index].chars() {

@@ -1201,17 +1201,6 @@ impl Context {
         }
     }
 
-    fn expression_to_condition(expr: Expression<Unresolved>) -> Condition<Unresolved> {
-        match expr {
-            Expression::Condition(_, condition) => *condition,
-            Expression::Grouped(_, inner) => Self::expression_to_condition(*inner),
-            other => {
-                let span = other.span();
-                Condition::Bool(span, Box::new(other))
-            }
-        }
-    }
-
     fn wrap_condition_expression(condition: Condition<Unresolved>) -> Expression<Unresolved> {
         let span = condition.span();
         Expression::Condition(span, Box::new(condition))
@@ -1252,10 +1241,11 @@ impl Context {
     ) -> Expression<Unresolved> {
         let left_span = left.span();
         let right_span = right.span();
+        // Keep subtrees as boolean values so their branches do not form a linear spine.
         Self::wrap_condition_expression(Condition::And(
-            left_span.join(right_span),
-            Box::new(Self::expression_to_condition(left)),
-            Box::new(Self::expression_to_condition(right)),
+            left_span.clone().join(right_span.clone()),
+            Box::new(Condition::Bool(left_span, Box::new(left))),
+            Box::new(Condition::Bool(right_span, Box::new(right))),
         ))
     }
 
@@ -1340,6 +1330,7 @@ impl Context {
                 step.expr.clone(),
             ),
             _ => {
+                let span = first.span().join(rest.last().unwrap().expr.span());
                 let temporaries = rest
                     .iter()
                     .take(rest.len() - 1)
@@ -1368,25 +1359,39 @@ impl Context {
                     left = next_left;
                 }
 
-                let mut combined = comparisons
-                    .into_iter()
-                    .reduce(Self::and_expression)
-                    .expect("comparison chains always contain at least one comparison");
-
-                for (name, binding) in temporaries.into_iter().rev() {
-                    let binding_span = binding.span();
-                    combined = Expression::Let {
-                        span: binding_span.join(combined.span()),
-                        pattern: Pattern {
-                            steps: Vec::new(),
-                            terminal: PatternTerminal::Name(binding_span.clone(), name, None),
-                        },
-                        expression: Box::new(binding),
-                        then: Box::new(combined),
-                    };
+                while comparisons.len() > 1 {
+                    let mut pairs = comparisons.into_iter();
+                    let mut combined = Vec::with_capacity(pairs.len().div_ceil(2));
+                    while let Some(left) = pairs.next() {
+                        combined.push(match pairs.next() {
+                            Some(right) => Self::and_expression(left, right),
+                            None => left,
+                        });
+                    }
+                    comparisons = combined;
                 }
 
-                combined
+                Expression::Do {
+                    span: span.clone(),
+                    process: Box::new(Process {
+                        steps: temporaries
+                            .into_iter()
+                            .map(|(name, binding)| {
+                                let span = binding.span();
+                                ProcessStep::Let {
+                                    span: span.clone(),
+                                    pattern: Pattern {
+                                        steps: Vec::new(),
+                                        terminal: PatternTerminal::Name(span, name, None),
+                                    },
+                                    value: Box::new(binding),
+                                }
+                            })
+                            .collect(),
+                        terminator: ProcessTerminator::Fallthrough(span),
+                    }),
+                    then: Box::new(comparisons.pop().unwrap()),
+                }
             }
         }
     }
