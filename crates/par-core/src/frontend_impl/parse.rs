@@ -1645,8 +1645,8 @@ fn expr_include(input: &mut Input) -> Result<Expression<Unresolved>> {
 }
 
 fn expr_grouped(input: &mut Input) -> Result<Expression<Unresolved>> {
-    (t(TokenKind::LCurly), expression, t(TokenKind::RCurly))
-        .map(|(open, expr, close)| {
+    commit_after(t(TokenKind::LCurly), (expression, t(TokenKind::RCurly)))
+        .map(|(open, (expr, close))| {
             Expression::Grouped(open.span.join(close.span()), Box::new(expr))
         })
         .parse_next(input)
@@ -3785,6 +3785,13 @@ mod test {
             parse_module(&source, "Main.par".into()).is_ok(),
             "failed to parse definition body: {body}"
         );
+    }
+
+    #[test]
+    fn unterminated_nested_groups_from_fuzz_artifact_are_rejected() {
+        // fuzz/artifacts/source_parse/minimized-from-951892e61741544249594605319fe41d8851152e
+        let source = "def Nl={{{{{{{{";
+        assert!(parse_source_file(source, "Main.par".into()).is_err());
     }
 
     #[test]
