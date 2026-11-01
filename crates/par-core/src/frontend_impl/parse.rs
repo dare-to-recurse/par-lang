@@ -1755,16 +1755,15 @@ fn expr_literal_string(input: &mut Input) -> Result<Expression<Unresolved>> {
 }
 
 fn expr_literal_template(input: &mut Input) -> Result<Expression<Unresolved>> {
-    (
+    commit_after(
         t(TokenKind::TemplateStart),
-        repeat(0.., template_part),
-        t(TokenKind::TemplateEnd),
+        (repeat(0.., template_part), t(TokenKind::TemplateEnd)),
     )
-        .map(|(open, parts, close)| Expression::Template {
-            span: open.span().join(close.span()),
-            parts,
-        })
-        .parse_next(input)
+    .map(|(open, (parts, close))| Expression::Template {
+        span: open.span().join(close.span()),
+        parts,
+    })
+    .parse_next(input)
 }
 
 fn template_part(input: &mut Input) -> Result<TemplatePart<Unresolved>> {
@@ -3846,6 +3845,16 @@ mod test {
         let source = format!("def X = {}!", "(".repeat(MAX_DELIMITER_DEPTH));
         let error = parse_source_file(&source, "Main.par".into()).unwrap_err();
         assert!(!error.help.contains("may not nest more than"));
+    }
+
+    #[test]
+    fn malformed_nested_templates_from_compile_fuzz_artifact_are_rejected() {
+        // fuzz/artifacts/source_compile/slow-unit-5f0beff808af7a1bb6a84c90fe81adff045e762e
+        let source = include_str!("testdata/source_compile_nested_templates.par");
+        let error = parse_source_file(source, "Main.par".into()).unwrap_err();
+        let (start, _) = error.span.points().unwrap();
+        // Preserve the nested failure rather than backtracking to the outer backtick.
+        assert_eq!(start.offset as usize, source.rfind("#{").unwrap());
     }
 
     #[test]
