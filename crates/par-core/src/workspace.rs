@@ -2660,6 +2660,15 @@ mod tests {
             .unwrap();
     }
 
+    #[test]
+    fn arithmetic_chain_from_compile_fuzz_artifact_reports_type_errors() {
+        // fuzz/artifacts/source_compile/minimized-from-33579fd8f896905c7c1ef6e34a121cd25153f497
+        let source = include_str!("testdata/source_compile_arithmetic_chain.par");
+        let parsed = parsed_package_from_files("local", &[("Main.par", source)]);
+        let errors = workspace_type_errors(vec![WorkspacePackage::new(test_package_id(), parsed)]);
+        assert!(!errors.is_empty());
+    }
+
     fn row_and_column(source: &str, index: usize) -> (u32, u32) {
         let (mut row, mut column) = (0, 0);
         for ch in source[..index].chars() {

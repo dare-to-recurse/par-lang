@@ -1279,6 +1279,58 @@ impl Context {
         )
     }
 
+    fn desugar_arithmetic_tree_expression(
+        &mut self,
+        expression: &Expression<Unresolved>,
+    ) -> Expression<Unresolved> {
+        let mut pending = vec![(expression, false)];
+        let mut values = Vec::new();
+        let mut steps = Vec::new();
+
+        // Visit operands before their operator, preserving the source tree's associativity.
+        while let Some((node, operands_ready)) = pending.pop() {
+            let value = match (node, operands_ready) {
+                (Expression::Arithmetic { left, right, .. }, false) => {
+                    pending.push((node, true));
+                    pending.push((right, false));
+                    pending.push((left, false));
+                    continue;
+                }
+                (Expression::Arithmetic { op_span, op, .. }, true) => {
+                    let right = values.pop().unwrap();
+                    let left = values.pop().unwrap();
+                    Self::desugar_arithmetic_expression(op_span, *op, left, right)
+                }
+                (other, _) => {
+                    values.push(other.clone());
+                    continue;
+                }
+            };
+            let span = node.span();
+            let name = self.fresh_infix_temp(span.clone());
+            steps.push(ProcessStep::Let {
+                span: span.clone(),
+                pattern: Pattern {
+                    steps: Vec::new(),
+                    terminal: PatternTerminal::Name(span.clone(), name.clone(), None),
+                },
+                value: Box::new(value),
+            });
+            values.push(Expression::Variable(span, name));
+        }
+
+        debug_assert_eq!(values.len(), 1);
+        let span = expression.span();
+        Expression::Do {
+            span: span.clone(),
+            process: Box::new(Process {
+                steps,
+                terminator: ProcessTerminator::Fallthrough(span),
+            }),
+            then: Box::new(values.pop().unwrap()),
+        }
+    }
+
     fn desugar_comparison_expression(
         op_span: &Span,
         op: ComparisonOperator,
@@ -2169,19 +2221,8 @@ impl Context {
                 })
             }
 
-            Expression::Arithmetic {
-                op_span,
-                op,
-                left,
-                right,
-                ..
-            } => {
-                let desugared = Self::desugar_arithmetic_expression(
-                    op_span,
-                    *op,
-                    left.as_ref().clone(),
-                    right.as_ref().clone(),
-                );
+            Expression::Arithmetic { .. } => {
+                let desugared = self.desugar_arithmetic_tree_expression(expr);
                 self.compile_expression(&desugared)?
             }
 
